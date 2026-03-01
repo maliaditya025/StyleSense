@@ -1,0 +1,67 @@
+===============================================================
+        STYLESENSE — Technologies Used
+===============================================================
+
+---------------------------------------------------------------
+ BACKEND (Python / FastAPI)
+---------------------------------------------------------------
+1.  Python 3.9+              — Core programming language
+2.  FastAPI 0.104             — Modern async web framework
+3.  Uvicorn 0.24              — ASGI server (runs FastAPI)
+4.  SQLAlchemy 2.0            — ORM for database operations
+5.  SQLite                    — Lightweight SQL database (MVP)
+6.  Pydantic 2.5              — Data validation & serialization
+7.  Pydantic-Settings 2.1     — Environment config management
+8.  Python-Jose 3.3           — JWT token encode/decode
+9.  Bcrypt 4.1                — Password hashing
+10. Python-Multipart 0.0.6    — File upload parsing
+11. Aiofiles 23.2             — Async file I/O
+12. Python-Dotenv 1.0         — .env file loading
+
+---------------------------------------------------------------
+ AI / MACHINE LEARNING
+---------------------------------------------------------------
+13. TensorFlow 2.20           — Deep learning framework
+14. Keras (via TensorFlow)    — High-level neural network API
+15. MobileNetV2               — CNN model (transfer learning)
+16. OpenCV 4.8 (Headless)     — Computer vision / image analysis
+17. Pillow 10.1               — Image processing library
+18. NumPy 1.26                — Numerical computing
+19. Scikit-Learn 1.3          — ML utilities (KMeans for color)
+
+---------------------------------------------------------------
+ FRONTEND (Next.js / React)
+---------------------------------------------------------------
+20. Next.js 15                — React framework (SSR/SSG)
+21. React 19                  — UI component library
+22. TypeScript                — Type-safe JavaScript
+23. Tailwind CSS 4            — Utility-first CSS framework
+24. Framer Motion             — Animation library
+25. Three.js                  — 3D rendering (WebGL)
+26. @react-three/fiber        — React renderer for Three.js
+27. @react-three/drei         — Three.js helpers & components
+28. Zustand                   — Lightweight state management
+29. Axios                     — HTTP client for API calls
+30. Google Fonts (Geist)      — Typography
+
+---------------------------------------------------------------
+ DEVELOPMENT TOOLS
+---------------------------------------------------------------
+31. npm                       — Package manager
+32. ESLint                    — Code linting
+33. Git                       — Version control
+34. Venv                      — Python virtual environment
+35. QRCode (Python)           — QR code generation
+
+---------------------------------------------------------------
+ ARCHITECTURE
+---------------------------------------------------------------
+• REST API architecture (FastAPI backend ↔ Next.js frontend)
+• JWT-based authentication with Bearer tokens
+• CNN-based clothing classification (MobileNetV2 ImageNet)
+• Hybrid AI detection (CNN + heuristic fallback)
+• Rule-based outfit recommendation engine
+• Transfer learning pipeline for custom model training
+• Responsive dark-theme UI with glassmorphism design
+
+===============================================================

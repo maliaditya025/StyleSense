@@ -1,0 +1,15 @@
+# ─── Render Backend Deployment ────────────────────────
+# This file tells Render how to build and run the backend.
+# Service Type: Web Service
+# Runtime: Python
+
+# Build Command
+# pip install -r requirements.txt
+
+# Start Command  
+# uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+# Environment Variables (set in Render dashboard):
+# DATABASE_URL=postgresql://...  (from Render PostgreSQL)
+# SECRET_KEY=your-secret-key-here
+# CORS_ORIGINS=https://your-app.vercel.app

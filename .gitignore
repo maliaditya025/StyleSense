@@ -1,0 +1,38 @@
+# ─── Python / Backend ─────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+*.db
+*.sqlite3
+.env
+
+# ─── Node / Frontend ──────────────────────────────────
+node_modules/
+.next/
+out/
+.env.local
+.env.*.local
+
+# ─── Uploads (user-uploaded images, don't commit) ─────
+backend/uploads/
+
+# ─── IDE / OS ─────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── AI Models (too large for git) ────────────────────
+backend/app/ai/clothing_model.h5
+*.h5
+
+# ─── Misc ─────────────────────────────────────────────
+closet_qr.png
+.gemini/
