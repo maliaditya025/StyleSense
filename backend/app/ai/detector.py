@@ -23,6 +23,14 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import cv2
 
+# Check if TensorFlow is available (optional dependency)
+try:
+    import tensorflow
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
+    print("⚠️  TensorFlow not installed — using heuristic-only clothing detection")
+
 # Lazy imports for TensorFlow (heavy library)
 _tf_loaded = False
 _custom_model = None
@@ -343,6 +351,10 @@ def detect_clothing_with_confidence(image_path: str) -> dict:
     """
     if not Path(image_path).exists():
         return {"category": "t-shirt", "confidence": 0.0}
+
+    # If TensorFlow is not available, use heuristic only
+    if not TF_AVAILABLE:
+        return _heuristic_detect(image_path)
 
     # Priority 1: Custom trained model
     custom = _get_custom_model()

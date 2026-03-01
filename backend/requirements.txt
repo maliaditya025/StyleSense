@@ -13,4 +13,3 @@ pydantic-settings>=2.1.0
 aiofiles>=23.2.0
 python-dotenv>=1.0.0
 bcrypt>=4.1.0
-tensorflow>=2.15.0
