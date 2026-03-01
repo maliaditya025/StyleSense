@@ -12,6 +12,30 @@ const OCCASIONS = [
     { value: "party", label: "Party", icon: "🎉" },
     { value: "work", label: "Work", icon: "💼" },
     { value: "date", label: "Date", icon: "💕" },
+    { value: "vacation", label: "Vacation", icon: "🏖" },
+    { value: "gym", label: "Gym", icon: "🏋️" },
+];
+
+const WEATHER = [
+    { value: "", label: "Any", icon: "🌤" },
+    { value: "hot", label: "Hot", icon: "🔥" },
+    { value: "warm", label: "Warm", icon: "☀️" },
+    { value: "cold", label: "Cold", icon: "❄️" },
+    { value: "rainy", label: "Rainy", icon: "🌧" },
+];
+
+const TIME_OF_DAY = [
+    { value: "", label: "Any", icon: "⏰" },
+    { value: "morning", label: "Morning", icon: "🌅" },
+    { value: "afternoon", label: "Afternoon", icon: "☀️" },
+    { value: "evening", label: "Evening", icon: "🌇" },
+    { value: "night", label: "Night", icon: "🌙" },
+];
+
+const LOCATIONS = [
+    { value: "", label: "Any", icon: "📍" },
+    { value: "indoor", label: "Indoor", icon: "🏢" },
+    { value: "outdoor", label: "Outdoor", icon: "🌳" },
 ];
 
 export default function RecommendationsPage() {
@@ -20,6 +44,9 @@ export default function RecommendationsPage() {
     const [selectedOutfit, setSelectedOutfit] = useState<Outfit | null>(null);
     const [tips, setTips] = useState<StylingTips | null>(null);
     const [loadingTips, setLoadingTips] = useState(false);
+    const [weather, setWeather] = useState("");
+    const [timeOfDay, setTimeOfDay] = useState("");
+    const [location, setLocation] = useState("");
 
     const handleGenerate = async () => {
         setLoading(true);
@@ -27,7 +54,7 @@ export default function RecommendationsPage() {
         setSelectedOutfit(null);
         setTips(null);
         try {
-            const data = await generateOutfits({ occasion: selectedOccasion });
+            const data = await generateOutfits({ occasion: selectedOccasion, weather, time_of_day: timeOfDay, location });
             setOutfits(data);
         } catch (err: any) {
             setError(err.response?.data?.detail || "Failed to generate outfits. Make sure you have at least 2 items in your closet.");
@@ -81,6 +108,75 @@ export default function RecommendationsPage() {
                             >
                                 <span>{occ.icon}</span>
                                 {occ.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Weather Selector */}
+                <div className="mb-5">
+                    <h3 className="text-sm font-medium mb-3" style={{ color: "var(--text-secondary)" }}>
+                        🌤 Weather
+                    </h3>
+                    <div className="flex gap-2 flex-wrap">
+                        {WEATHER.map((w) => (
+                            <button
+                                key={w.value}
+                                onClick={() => setWeather(w.value)}
+                                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-1.5
+                  ${weather === w.value
+                                        ? "bg-sky-500/20 text-sky-300 border border-sky-500/30"
+                                        : "glass-card text-slate-400 hover:text-slate-200"
+                                    }`}
+                            >
+                                <span>{w.icon}</span>
+                                {w.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Time of Day Selector */}
+                <div className="mb-5">
+                    <h3 className="text-sm font-medium mb-3" style={{ color: "var(--text-secondary)" }}>
+                        🕒 Time of Day
+                    </h3>
+                    <div className="flex gap-2 flex-wrap">
+                        {TIME_OF_DAY.map((t) => (
+                            <button
+                                key={t.value}
+                                onClick={() => setTimeOfDay(t.value)}
+                                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-1.5
+                  ${timeOfDay === t.value
+                                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                        : "glass-card text-slate-400 hover:text-slate-200"
+                                    }`}
+                            >
+                                <span>{t.icon}</span>
+                                {t.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Location Selector */}
+                <div className="mb-8">
+                    <h3 className="text-sm font-medium mb-3" style={{ color: "var(--text-secondary)" }}>
+                        📍 Location
+                    </h3>
+                    <div className="flex gap-2 flex-wrap">
+                        {LOCATIONS.map((l) => (
+                            <button
+                                key={l.value}
+                                onClick={() => setLocation(l.value)}
+                                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-1.5
+                  ${location === l.value
+                                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                        : "glass-card text-slate-400 hover:text-slate-200"
+                                    }`}
+                            >
+                                <span>{l.icon}</span>
+                                {l.label}
                             </button>
                         ))}
                     </div>

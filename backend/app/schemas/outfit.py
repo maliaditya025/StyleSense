@@ -31,7 +31,10 @@ class OutfitResponse(BaseModel):
 
 
 class GenerateOutfitsRequest(BaseModel):
-    occasion: str = Field("casual", examples=["casual", "formal", "party", "work", "date"])
+    occasion: str = Field("casual", examples=["casual", "formal", "party", "work", "date", "vacation", "gym"])
+    weather: Optional[str] = Field("", examples=["hot", "warm", "cold", "rainy"])
+    time_of_day: Optional[str] = Field("", examples=["morning", "afternoon", "evening", "night"])
+    location: Optional[str] = Field("", examples=["indoor", "outdoor"])
 
 
 class StylingTipResponse(BaseModel):

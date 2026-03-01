@@ -63,6 +63,9 @@ async def generate_outfits(
         clothes=clothes_data,
         user_profile=user_profile,
         occasion=payload.occasion,
+        weather=payload.weather or "",
+        time_of_day=payload.time_of_day or "",
+        location=payload.location or "",
         top_n=3,
     )
 

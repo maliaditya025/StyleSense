@@ -76,6 +76,9 @@ export interface StylingTips {
 
 export interface GenerateOutfitsPayload {
   occasion: string;
+  weather?: string;
+  time_of_day?: string;
+  location?: string;
 }
 
 export type ClothingCategory =
