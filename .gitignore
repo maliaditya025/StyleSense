@@ -33,6 +33,7 @@ backend/uploads/
 backend/app/ai/clothing_model.h5
 *.h5
 *.pth
+stylesense-ai/dataset/
 
 # ─── Misc ─────────────────────────────────────────────
 closet_qr.png
