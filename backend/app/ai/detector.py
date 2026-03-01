@@ -1,14 +1,17 @@
 """
-CNN-based clothing category detector using MobileNetV2 transfer learning.
+CNN-based clothing category detector using MobileNetV2.
 
 Three modes of operation (in priority order):
-  1. CUSTOM MODEL: If clothing_model.h5 exists, uses it for 10-class prediction.
-  2. IMAGENET CNN: Uses MobileNetV2 ImageNet weights with class mapping.
-  3. HEURISTIC FALLBACK: Uses image analysis (aspect ratio, color, skin detection)
-     when CNN confidence is below threshold.
+  1. CUSTOM ONNX MODEL: If clothing_custom.onnx exists, uses custom-trained model.
+  2. IMAGENET ONNX MODEL: If clothing_classifier.onnx exists, uses ImageNet model
+     with class mapping to clothing categories.
+  3. HEURISTIC FALLBACK: Uses image analysis (aspect ratio, color, edge detection)
+     when no ONNX model is available.
 
-The hybrid approach combines CNN strengths (good at jersey/t-shirt, jean, shoe, suit)
-with heuristic strengths (good at distinguishing pants from shirts by aspect ratio).
+Deployment:
+  - Local dev: Can use any mode (PyTorch for training, ONNX for inference)
+  - Render: Uses ONNX Runtime (~20MB) for lightweight inference
+  - onnxruntime replaces the heavy TensorFlow/PyTorch dependency
 
 Supported categories:
   shirt, t-shirt, pants, jeans, shoes, jacket, dress, accessories, shorts, skirt
@@ -18,155 +21,179 @@ import os
 import numpy as np
 from pathlib import Path
 
-# Suppress TensorFlow info messages
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
 import cv2
 
-# Check if TensorFlow is available (optional dependency)
-try:
-    import tensorflow
-    TF_AVAILABLE = True
-except ImportError:
-    TF_AVAILABLE = False
-    print("⚠️  TensorFlow not installed — using heuristic-only clothing detection")
+# ═══════════════════════════════════════════════════════════════════════
+# CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════
 
-# Lazy imports for TensorFlow (heavy library)
-_tf_loaded = False
-_custom_model = None
-_imagenet_model = None
+IMG_SIZE = 224
 
 CATEGORIES = [
     "shirt", "t-shirt", "pants", "jeans", "shoes",
     "jacket", "dress", "accessories", "shorts", "skirt",
 ]
 
-IMG_SIZE = 224
+VALID_CATEGORIES = set(CATEGORIES)
 
-# ─── ImageNet class → our category mapping ─────────────────────────────
+# ImageNet class → clothing category mapping (for pretrained model)
 IMAGENET_MAP = {
-    # Tops / T-shirts
-    "jersey": "t-shirt",
-    "sweatshirt": "shirt",
-    "wool": "shirt",
-    # Jackets / Outerwear
-    "cardigan": "jacket",
-    "suit": "jacket",
-    "lab_coat": "jacket",
-    "military_uniform": "jacket",
-    "poncho": "jacket",
-    "trench_coat": "jacket",
-    "fur_coat": "jacket",
-    "bulletproof_vest": "jacket",
-    "chain_mail": "jacket",
-    "cuirass": "jacket",
-    # Bottoms
-    "jean": "jeans",
-    "swimming_trunks": "shorts",
-    "pajama": "pants",
-    # Dresses / Skirts
-    "kimono": "dress",
-    "abaya": "dress",
-    "maillot": "dress",
-    "gown": "dress",
-    "academic_gown": "dress",
-    "vestment": "dress",
-    "sarong": "skirt",
-    "overskirt": "skirt",
-    "hoopskirt": "skirt",
+    "jersey": "t-shirt", "T-shirt": "t-shirt", "tee_shirt": "t-shirt",
+    "sweatshirt": "t-shirt",
+    "jean": "jeans", "jeans": "jeans",
+    "suit": "shirt", "Windsor_tie": "shirt", "bow_tie": "shirt",
+    "lab_coat": "jacket", "trench_coat": "jacket", "fur_coat": "jacket",
+    "military_uniform": "jacket", "cardigan": "jacket", "poncho": "jacket",
+    "vestment": "jacket", "cloak": "jacket", "stole": "jacket",
+    "kimono": "dress", "gown": "dress", "overskirt": "dress",
+    "hoopskirt": "dress", "sarong": "dress",
     "miniskirt": "skirt",
-    # Shoes
-    "running_shoe": "shoes",
-    "sandal": "shoes",
-    "cowboy_boot": "shoes",
-    "Loafer": "shoes",
-    "clog": "shoes",
-    # Accessories
-    "bow_tie": "accessories",
-    "Windsor_tie": "accessories",
-    "bolo_tie": "accessories",
-    "sunglass": "accessories",
-    "sunglasses": "accessories",
-    "sombrero": "accessories",
-    "cowboy_hat": "accessories",
-    "bonnet": "accessories",
-    "backpack": "accessories",
-    "purse": "accessories",
-    "wallet": "accessories",
-    "sock": "accessories",
-    "stole": "accessories",
-    "mitten": "accessories",
+    "running_shoe": "shoes", "Loafer": "shoes", "sandal": "shoes",
+    "clog": "shoes", "cowboy_boot": "shoes", "boot": "shoes",
+    "sock": "accessories", "sunglasses": "accessories",
+    "sunglass": "accessories", "backpack": "accessories",
+    "purse": "accessories", "wallet": "accessories",
+    "knot": "accessories", "necklace": "accessories",
+    "swimming_trunks": "shorts",
+    "bikini": "dress", "brassiere": "accessories",
+    "maillot": "t-shirt", "pajama": "pants",
+    "abaya": "dress", "academic_gown": "dress",
 }
 
-
 # ═══════════════════════════════════════════════════════════════════════
-# CNN DETECTION
+# ONNX RUNTIME INFERENCE
 # ═══════════════════════════════════════════════════════════════════════
 
-def _ensure_tf():
-    """Lazy-load TensorFlow modules."""
-    global _tf_loaded
-    if not _tf_loaded:
-        import tensorflow as tf  # noqa: F401
-        _tf_loaded = True
+# Lazy-loaded ONNX sessions
+_onnx_custom = None
+_onnx_imagenet = None
+_onnx_available = None
 
 
-def _get_custom_model():
-    """Load custom-trained model if available."""
-    global _custom_model
-    model_path = Path(__file__).parent / "clothing_model.h5"
-    if model_path.exists() and _custom_model is None:
-        _ensure_tf()
-        from tensorflow.keras.models import load_model
-        print(f"🧠 Loading custom clothing model from {model_path}")
-        _custom_model = load_model(str(model_path))
-    return _custom_model
+def _check_onnx():
+    """Check if onnxruntime is available."""
+    global _onnx_available
+    if _onnx_available is None:
+        try:
+            import onnxruntime
+            _onnx_available = True
+        except ImportError:
+            _onnx_available = False
+            print("⚠️  onnxruntime not installed — using heuristic-only detection")
+    return _onnx_available
 
 
-def _get_imagenet_model():
-    """Load MobileNetV2 with ImageNet weights."""
-    global _imagenet_model
-    if _imagenet_model is None:
-        _ensure_tf()
-        from tensorflow.keras.applications import MobileNetV2
-        print("🧠 Loading MobileNetV2 ImageNet model...")
-        _imagenet_model = MobileNetV2(
-            input_shape=(IMG_SIZE, IMG_SIZE, 3),
-            include_top=True,
-            weights="imagenet",
-        )
-    return _imagenet_model
+def _get_custom_onnx():
+    """Load custom-trained ONNX model if available."""
+    global _onnx_custom
+    model_path = Path(__file__).parent / "clothing_custom.onnx"
+    if model_path.exists() and _onnx_custom is None and _check_onnx():
+        import onnxruntime as ort
+        print(f"🧠 Loading custom ONNX model from {model_path}")
+        _onnx_custom = ort.InferenceSession(str(model_path))
+    return _onnx_custom
 
 
-def _preprocess_for_mobilenet(img_path: str) -> np.ndarray:
-    """Load and preprocess image for MobileNetV2."""
-    _ensure_tf()
-    from tensorflow.keras.preprocessing import image
-    from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+def _get_imagenet_onnx():
+    """Load pretrained ImageNet ONNX model if available."""
+    global _onnx_imagenet
+    model_path = Path(__file__).parent / "clothing_classifier.onnx"
+    if model_path.exists() and _onnx_imagenet is None and _check_onnx():
+        import onnxruntime as ort
+        print(f"🧠 Loading ImageNet ONNX model from {model_path}")
+        _onnx_imagenet = ort.InferenceSession(str(model_path))
+    return _onnx_imagenet
 
-    img = image.load_img(img_path, target_size=(IMG_SIZE, IMG_SIZE))
-    arr = image.img_to_array(img)
-    arr = np.expand_dims(arr, axis=0)
-    return preprocess_input(arr)
+
+def _preprocess_image(img_path: str) -> np.ndarray:
+    """Preprocess image for MobileNetV2 (ONNX)."""
+    img = cv2.imread(img_path)
+    if img is None:
+        return None
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+    img = img.astype(np.float32) / 255.0
+
+    # ImageNet normalization
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img = (img - mean) / std
+
+    # CHW format, add batch dimension
+    img = np.transpose(img, (2, 0, 1))
+    img = np.expand_dims(img, axis=0)
+    return img
 
 
-def _predict_cnn(img_path: str) -> dict:
-    """Predict using MobileNetV2 ImageNet weights."""
-    _ensure_tf()
-    from tensorflow.keras.applications.mobilenet_v2 import decode_predictions
+def _softmax(x):
+    """Compute softmax probabilities."""
+    e = np.exp(x - np.max(x))
+    return e / e.sum()
 
-    model = _get_imagenet_model()
-    arr = _preprocess_for_mobilenet(img_path)
-    preds = model.predict(arr, verbose=0)
 
-    decoded = decode_predictions(preds, top=20)[0]
+def _predict_custom_onnx(img_path: str) -> dict:
+    """Predict using custom-trained ONNX model."""
+    session = _get_custom_onnx()
+    if session is None:
+        return None
 
-    # Aggregate scores for our categories
+    img = _preprocess_image(img_path)
+    if img is None:
+        return {"category": "t-shirt", "confidence": 0.0}
+
+    # Load class mapping
+    mapping_path = Path(__file__).parent / "class_mapping.txt"
+    if mapping_path.exists():
+        class_names = {}
+        with open(mapping_path) as f:
+            for line in f:
+                idx, name = line.strip().split(":")
+                class_names[int(idx)] = name
+    else:
+        class_names = {i: cat for i, cat in enumerate(sorted(CATEGORIES))}
+
+    input_name = session.get_inputs()[0].name
+    outputs = session.run(None, {input_name: img})[0][0]
+    probs = _softmax(outputs)
+
+    idx = int(np.argmax(probs))
+    category = class_names.get(idx, "t-shirt")
+    confidence = float(probs[idx])
+
+    return {
+        "category": category,
+        "confidence": round(confidence, 4),
+        "method": "custom_onnx",
+    }
+
+
+def _predict_imagenet_onnx(img_path: str) -> dict:
+    """Predict using pretrained ImageNet ONNX model with class mapping."""
+    session = _get_imagenet_onnx()
+    if session is None:
+        return None
+
+    img = _preprocess_image(img_path)
+    if img is None:
+        return {"category": "t-shirt", "confidence": 0.0}
+
+    input_name = session.get_inputs()[0].name
+    outputs = session.run(None, {input_name: img})[0][0]
+    probs = _softmax(outputs)
+
+    # Map top ImageNet predictions to clothing categories
+    # Load ImageNet class labels
+    top_indices = np.argsort(probs)[::-1][:30]
+
+    # We need ImageNet class names — use a built-in mapping
+    imagenet_labels = _get_imagenet_labels()
+
     scores = {cat: 0.0 for cat in CATEGORIES}
-    for _, class_name, score in decoded:
+    for idx in top_indices:
+        class_name = imagenet_labels.get(idx, "")
         mapped = IMAGENET_MAP.get(class_name)
         if mapped:
-            scores[mapped] += float(score)
+            scores[mapped] += float(probs[idx])
 
     best_cat = max(scores, key=scores.get)
     best_score = scores[best_cat]
@@ -174,31 +201,65 @@ def _predict_cnn(img_path: str) -> dict:
     return {
         "category": best_cat,
         "confidence": round(best_score, 4),
+        "method": "imagenet_onnx",
         "all_scores": {k: round(v, 4) for k, v in scores.items() if v > 0},
-        "imagenet_top5": [(name, round(float(s), 4)) for _, name, s in decoded[:5]],
     }
 
 
-def _predict_custom(img_path: str) -> dict:
-    """Predict using custom-trained model."""
-    _ensure_tf()
-    from tensorflow.keras.preprocessing import image
+# ImageNet label index → name mapping (subset relevant to clothing)
+_imagenet_labels_cache = None
 
-    model = _get_custom_model()
-    img = image.load_img(img_path, target_size=(IMG_SIZE, IMG_SIZE))
-    arr = image.img_to_array(img) / 255.0
-    arr = np.expand_dims(arr, axis=0)
 
-    preds = model.predict(arr, verbose=0)[0]
-    idx = int(np.argmax(preds))
-    return {
-        "category": CATEGORIES[idx],
-        "confidence": round(float(preds[idx]), 4),
+def _get_imagenet_labels() -> dict:
+    """Get ImageNet class index to name mapping."""
+    global _imagenet_labels_cache
+    if _imagenet_labels_cache is not None:
+        return _imagenet_labels_cache
+
+    # Hardcoded mapping for clothing-relevant ImageNet classes
+    _imagenet_labels_cache = {
+        400: "academic_gown", 401: "accordion",
+        610: "jersey", 611: "jigsaw_puzzle",
+        834: "suit", 835: "mushroom",
+        769: "running_shoe", 770: "safe",
+        514: "clog", 515: "chain_link_fence",
+        543: "cowboy_boot",
+        630: "lab_coat", 631: "ladle",
+        805: "sock", 806: "solar_dish",
+        837: "sunglass", 838: "sunglasses",
+        858: "sweatshirt", 859: "swimming_trunks",
+        474: "cardigan", 475: "car_mirror",
+        614: "kimono", 615: "knee_pad",
+        676: "miniskirt", 677: "mink",
+        508: "boot",
+        690: "overskirt",
+        689: "pajama",
+        435: "bikini",
+        449: "brassiere",
+        457: "bow_tie",
+        906: "Windsor_tie",
+        414: "backpack",
+        748: "purse",
+        893: "wallet",
+        469: "trench_coat",
+        568: "fur_coat",
+        671: "military_uniform",
+        539: "cloak",
+        823: "stole",
+        765: "poncho",
+        617: "gown",
+        601: "hoopskirt",
+        788: "sarong",
+        655: "maillot",
+        618: "abaya",
+        440: "Loafer",
+        774: "sandal",
     }
+    return _imagenet_labels_cache
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# HEURISTIC DETECTION (calibrated against real product photos)
+# HEURISTIC DETECTION (fallback when no model available)
 # ═══════════════════════════════════════════════════════════════════════
 
 def _heuristic_detect(img_path: str) -> dict:
@@ -234,178 +295,71 @@ def _heuristic_detect(img_path: str) -> dict:
     skin1 = cv2.inRange(hsv, np.array([0, 20, 70]), np.array([20, 255, 255]))
     skin2 = cv2.inRange(hsv, np.array([170, 20, 70]), np.array([180, 255, 255]))
     skin = skin1 | skin2
-    skin_total = float(np.sum(skin > 0)) / (h * w)
-
     third = h // 3
     skin_bot = float(np.sum(skin[2*third:, :] > 0)) / (third * w + 1)
 
-    # ── Upper-body garment detection ──────────────────────────────
-    # These features help distinguish hoodies/jackets/shirts from pants
-
-    def _has_upper_body_features(img, gray, h, w):
-        """Detect features typical of tops: neckline, sleeves, width variation."""
+    # Upper-body garment detection
+    def _upper_body_score(gray, h, w):
         score = 0
-
-        # 1. Neckline/collar detection: analyze top 20% of image
-        top_region = gray[:h // 5, :]
-        top_edges = cv2.Canny(top_region, 50, 150)
-        top_edge_density = float(np.sum(top_edges > 0)) / (top_region.shape[0] * top_region.shape[1] + 1)
-
-        # Tops often have high edge density at top (collar, neckline, hood)
-        if top_edge_density > 0.08:
+        # Neckline edges in top 20%
+        top_edges = cv2.Canny(gray[:h // 5, :], 50, 150)
+        if float(np.sum(top_edges > 0)) / (h // 5 * w + 1) > 0.08:
             score += 2
-
-        # 2. Width variation: tops are wider at shoulders, narrower at waist
-        # Compare width of non-background pixels at 25% vs 75% height
-        quarter_row = gray[h // 4, :]
-        three_quarter_row = gray[3 * h // 4, :]
-
-        # Check for background (very bright or very dark uniform areas)
-        bg_val = gray[0, 0]  # corner pixel as background reference
-        bg_threshold = 30
-
-        top_width = np.sum(np.abs(quarter_row.astype(int) - int(bg_val)) > bg_threshold)
-        bot_width = np.sum(np.abs(three_quarter_row.astype(int) - int(bg_val)) > bg_threshold)
-
-        # Tops: wider at shoulders than bottom (or similar width throughout)
-        if top_width > 0 and bot_width > 0:
-            width_ratio = top_width / (bot_width + 1)
-            if width_ratio > 0.9:  # Shoulders >= waist width
-                score += 2
-
-        # 3. Horizontal symmetry: tops (especially hoodies) are very symmetric
-        left_half = gray[:, :w // 2]
-        right_half = cv2.flip(gray[:, w // 2:], 1)
-        min_w = min(left_half.shape[1], right_half.shape[1])
+        # Width variation (shoulders vs waist)
+        bg_val = int(gray[0, 0])
+        top_w = np.sum(np.abs(gray[h // 4, :].astype(int) - bg_val) > 30)
+        bot_w = np.sum(np.abs(gray[3 * h // 4, :].astype(int) - bg_val) > 30)
+        if top_w > 0 and bot_w > 0 and top_w / (bot_w + 1) > 0.9:
+            score += 2
+        # Symmetry
+        left = gray[:, :w // 2]
+        right = cv2.flip(gray[:, w // 2:], 1)
+        min_w = min(left.shape[1], right.shape[1])
         if min_w > 10:
-            symmetry = 1.0 - float(np.mean(np.abs(
-                left_half[:, :min_w].astype(float) - right_half[:, :min_w].astype(float)
-            ))) / 255.0
-            if symmetry > 0.85:
+            sym = 1.0 - float(np.mean(np.abs(left[:, :min_w].astype(float) - right[:, :min_w].astype(float)))) / 255
+            if sym > 0.85:
                 score += 1
-
-        # 4. Vertical edges (seams, zippers) — common in jackets/hoodies
-        sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        center_third = sobel_x[:, w // 3: 2 * w // 3]
-        center_vertical_edges = float(np.mean(np.abs(center_third)))
-        if center_vertical_edges > 15:
-            score += 1  # Zipper or center seam detected
-
-        # 5. Check if top region has more detail/features than bottom
-        # (tops have collars/hoods at top; pants are uniform throughout)
-        top_half_std = float(np.std(gray[:h // 2, :]))
-        bot_half_std = float(np.std(gray[h // 2:, :]))
-        if top_half_std > bot_half_std * 1.1:
+        # Center vertical edges (zipper/seam)
+        sobel = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        if float(np.mean(np.abs(sobel[:, w // 3: 2 * w // 3]))) > 15:
             score += 1
-
+        # Top-half has more detail than bottom
+        if float(np.std(gray[:h // 2, :])) > float(np.std(gray[h // 2:, :])) * 1.1:
+            score += 1
         return score
 
-    upper_body_score = _has_upper_body_features(img, gray, h, w)
+    ub_score = _upper_body_score(gray, h, w)
 
-    # ── Decision tree ───────────────────────────────────────────────
-    conf = 0.5  # base confidence
-
-    # Strong blue → jeans
+    # Decision tree
     if blue_ratio > 0.15:
-        return {"category": "jeans", "confidence": min(0.85, conf + blue_ratio)}
-
-    # Very wide → shoes
+        return {"category": "jeans", "confidence": min(0.85, 0.5 + blue_ratio), "method": "heuristic"}
     if ar > 1.5:
-        return {"category": "shoes", "confidence": 0.7}
+        return {"category": "shoes", "confidence": 0.7, "method": "heuristic"}
 
-    # Very tall images (ar < 0.6) — could be pants OR hoodie/jacket
     if ar < 0.6:
         if blue_ratio > 0.06:
-            return {"category": "jeans", "confidence": 0.65}
-        # Check for upper-body features before defaulting to pants
-        if upper_body_score >= 3:
-            if avg_bright < 100:
-                return {"category": "jacket", "confidence": 0.65, "method": "heuristic"}
-            return {"category": "t-shirt", "confidence": 0.60, "method": "heuristic"}
-        return {"category": "pants", "confidence": 0.7}
+            return {"category": "jeans", "confidence": 0.65, "method": "heuristic"}
+        if ub_score >= 3:
+            return {"category": "jacket" if avg_bright < 100 else "t-shirt", "confidence": 0.65, "method": "heuristic"}
+        return {"category": "pants", "confidence": 0.7, "method": "heuristic"}
 
-    # Tall images (0.6-0.85) — bottoms usually, but check for tops
     if ar < 0.85:
         if blue_ratio > 0.06:
-            return {"category": "jeans", "confidence": 0.6}
+            return {"category": "jeans", "confidence": 0.6, "method": "heuristic"}
         if skin_bot > 0.35:
-            return {"category": "shorts", "confidence": 0.6}
-        # Upper-body garment check
-        if upper_body_score >= 3:
+            return {"category": "shorts", "confidence": 0.6, "method": "heuristic"}
+        if ub_score >= 3:
             if avg_bright < 100:
                 return {"category": "jacket", "confidence": 0.65, "method": "heuristic"}
-            if texture > 45:
-                return {"category": "shirt", "confidence": 0.60, "method": "heuristic"}
-            return {"category": "t-shirt", "confidence": 0.55, "method": "heuristic"}
-        return {"category": "pants", "confidence": 0.65}
+            return {"category": "shirt" if texture > 45 else "t-shirt", "confidence": 0.60, "method": "heuristic"}
+        return {"category": "pants", "confidence": 0.65, "method": "heuristic"}
 
-    # Square/wide images (0.85+) → tops
     if avg_bright < 100:
-        return {"category": "jacket", "confidence": 0.55}
+        return {"category": "jacket", "confidence": 0.55, "method": "heuristic"}
     if texture > 55:
-        return {"category": "shirt", "confidence": 0.55}
+        return {"category": "shirt", "confidence": 0.55, "method": "heuristic"}
 
-    return {"category": "t-shirt", "confidence": 0.5}
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# HYBRID DETECTION (combines CNN + heuristics)
-# ═══════════════════════════════════════════════════════════════════════
-
-def _hybrid_detect(img_path: str) -> dict:
-    """
-    Combines CNN and heuristic detection for best results.
-
-    Strategy:
-    - If CNN confidence ≥ 40%, use CNN result
-    - If CNN says t-shirt/jeans/shoes with any confidence, trust it (CNN is good at these)
-    - Otherwise, use heuristic (better at pants vs shirts from aspect ratio)
-    """
-    cnn = _predict_cnn(img_path)
-    heuristic = _heuristic_detect(img_path)
-
-    cnn_cat = cnn["category"]
-    cnn_conf = cnn["confidence"]
-    heur_cat = heuristic["category"]
-
-    # CNN is very confident → trust it
-    if cnn_conf >= 0.4:
-        # Exception: CNN often says "jacket" for bottom garments (sees lab_coat/suit/military_uniform)
-        # If heuristic says it's a bottom garment, prefer heuristic
-        if cnn_cat == "jacket" and heur_cat in ("pants", "jeans", "shorts"):
-            return {
-                "category": heur_cat,
-                "confidence": round(max(heuristic["confidence"], 0.6), 4),
-                "method": "heuristic_override",
-            }
-        return {
-            "category": cnn_cat,
-            "confidence": round(cnn_conf, 4),
-            "method": "cnn",
-        }
-
-    # CNN has some signal for categories it's good at
-    if cnn_cat in ("t-shirt", "jeans", "shoes") and cnn_conf >= 0.15:
-        return {
-            "category": cnn_cat,
-            "confidence": round(cnn_conf, 4),
-            "method": "cnn_low_conf",
-        }
-
-    # CNN and heuristic agree → high confidence
-    if cnn_cat == heur_cat:
-        return {
-            "category": cnn_cat,
-            "confidence": round(max(cnn_conf, heuristic["confidence"]), 4),
-            "method": "consensus",
-        }
-
-    # Default: trust heuristic (better at aspect-ratio-based classification)
-    return {
-        "category": heur_cat,
-        "confidence": round(heuristic["confidence"], 4),
-        "method": "heuristic",
-    }
+    return {"category": "t-shirt", "confidence": 0.5, "method": "heuristic"}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -421,19 +375,37 @@ def detect_clothing_category(image_path: str) -> str:
 def detect_clothing_with_confidence(image_path: str) -> dict:
     """
     Detect clothing category with confidence score.
-    Returns: {"category": str, "confidence": float, ...}
+    Returns: {"category": str, "confidence": float, "method": str}
+
+    Priority:
+      1. Custom ONNX model (trained on clothing data)
+      2. ImageNet ONNX model (pretrained with class mapping)
+      3. Heuristic fallback (aspect ratio + color + edge detection)
     """
     if not Path(image_path).exists():
-        return {"category": "t-shirt", "confidence": 0.0}
+        return {"category": "t-shirt", "confidence": 0.0, "method": "default"}
 
-    # If TensorFlow is not available, use heuristic only
-    if not TF_AVAILABLE:
-        return _heuristic_detect(image_path)
+    # Priority 1: Custom trained ONNX model
+    if _check_onnx():
+        custom_result = _predict_custom_onnx(image_path)
+        if custom_result and custom_result["confidence"] > 0.5:
+            return custom_result
 
-    # Priority 1: Custom trained model
-    custom = _get_custom_model()
-    if custom is not None:
-        return _predict_custom(image_path)
+    # Priority 2: Pretrained ImageNet ONNX model
+    if _check_onnx():
+        imagenet_result = _predict_imagenet_onnx(image_path)
+        if imagenet_result and imagenet_result["confidence"] > 0.3:
+            # Combine with heuristic for better accuracy
+            heuristic = _heuristic_detect(image_path)
+            # If both agree, boost confidence
+            if imagenet_result["category"] == heuristic["category"]:
+                imagenet_result["confidence"] = min(0.95, imagenet_result["confidence"] + 0.15)
+                imagenet_result["method"] = "onnx+heuristic"
+            # If CNN says jacket but heuristic says pants (common confusion) - trust heuristic
+            elif imagenet_result["category"] == "jacket" and heuristic["category"] in ("pants", "jeans", "shorts"):
+                if heuristic["confidence"] > 0.5:
+                    return heuristic
+            return imagenet_result
 
-    # Priority 2: Hybrid CNN + heuristic
-    return _hybrid_detect(image_path)
+    # Priority 3: Heuristic fallback
+    return _heuristic_detect(image_path)

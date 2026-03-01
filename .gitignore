@@ -29,9 +29,10 @@ backend/uploads/
 *.swo
 *~
 
-# ─── AI Models (too large for git) ────────────────────
+# ─── AI Models (heavy formats, not for git) ───────────
 backend/app/ai/clothing_model.h5
 *.h5
+*.pth
 
 # ─── Misc ─────────────────────────────────────────────
 closet_qr.png
