@@ -203,9 +203,8 @@ def _predict_custom(img_path: str) -> dict:
 
 def _heuristic_detect(img_path: str) -> dict:
     """
-    Aspect-ratio and color-based heuristic detection.
-    Good at: pants vs shirts (aspect ratio), jeans (blue color),
-    shoes (wide images), shorts (very high skin at bottom).
+    Improved heuristic detection using aspect ratio, color, texture,
+    and upper-body garment features (neckline, sleeves, symmetry).
     """
     img = cv2.imread(img_path)
     if img is None:
@@ -240,8 +239,71 @@ def _heuristic_detect(img_path: str) -> dict:
     third = h // 3
     skin_bot = float(np.sum(skin[2*third:, :] > 0)) / (third * w + 1)
 
+    # ── Upper-body garment detection ──────────────────────────────
+    # These features help distinguish hoodies/jackets/shirts from pants
+
+    def _has_upper_body_features(img, gray, h, w):
+        """Detect features typical of tops: neckline, sleeves, width variation."""
+        score = 0
+
+        # 1. Neckline/collar detection: analyze top 20% of image
+        top_region = gray[:h // 5, :]
+        top_edges = cv2.Canny(top_region, 50, 150)
+        top_edge_density = float(np.sum(top_edges > 0)) / (top_region.shape[0] * top_region.shape[1] + 1)
+
+        # Tops often have high edge density at top (collar, neckline, hood)
+        if top_edge_density > 0.08:
+            score += 2
+
+        # 2. Width variation: tops are wider at shoulders, narrower at waist
+        # Compare width of non-background pixels at 25% vs 75% height
+        quarter_row = gray[h // 4, :]
+        three_quarter_row = gray[3 * h // 4, :]
+
+        # Check for background (very bright or very dark uniform areas)
+        bg_val = gray[0, 0]  # corner pixel as background reference
+        bg_threshold = 30
+
+        top_width = np.sum(np.abs(quarter_row.astype(int) - int(bg_val)) > bg_threshold)
+        bot_width = np.sum(np.abs(three_quarter_row.astype(int) - int(bg_val)) > bg_threshold)
+
+        # Tops: wider at shoulders than bottom (or similar width throughout)
+        if top_width > 0 and bot_width > 0:
+            width_ratio = top_width / (bot_width + 1)
+            if width_ratio > 0.9:  # Shoulders >= waist width
+                score += 2
+
+        # 3. Horizontal symmetry: tops (especially hoodies) are very symmetric
+        left_half = gray[:, :w // 2]
+        right_half = cv2.flip(gray[:, w // 2:], 1)
+        min_w = min(left_half.shape[1], right_half.shape[1])
+        if min_w > 10:
+            symmetry = 1.0 - float(np.mean(np.abs(
+                left_half[:, :min_w].astype(float) - right_half[:, :min_w].astype(float)
+            ))) / 255.0
+            if symmetry > 0.85:
+                score += 1
+
+        # 4. Vertical edges (seams, zippers) — common in jackets/hoodies
+        sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        center_third = sobel_x[:, w // 3: 2 * w // 3]
+        center_vertical_edges = float(np.mean(np.abs(center_third)))
+        if center_vertical_edges > 15:
+            score += 1  # Zipper or center seam detected
+
+        # 5. Check if top region has more detail/features than bottom
+        # (tops have collars/hoods at top; pants are uniform throughout)
+        top_half_std = float(np.std(gray[:h // 2, :]))
+        bot_half_std = float(np.std(gray[h // 2:, :]))
+        if top_half_std > bot_half_std * 1.1:
+            score += 1
+
+        return score
+
+    upper_body_score = _has_upper_body_features(img, gray, h, w)
+
     # ── Decision tree ───────────────────────────────────────────────
-    conf = 0.5  # base confidence for heuristics
+    conf = 0.5  # base confidence
 
     # Strong blue → jeans
     if blue_ratio > 0.15:
@@ -251,21 +313,33 @@ def _heuristic_detect(img_path: str) -> dict:
     if ar > 1.5:
         return {"category": "shoes", "confidence": 0.7}
 
-    # Very tall → pants/jeans/dress
+    # Very tall images (ar < 0.6) — could be pants OR hoodie/jacket
     if ar < 0.6:
         if blue_ratio > 0.06:
             return {"category": "jeans", "confidence": 0.65}
+        # Check for upper-body features before defaulting to pants
+        if upper_body_score >= 3:
+            if avg_bright < 100:
+                return {"category": "jacket", "confidence": 0.65, "method": "heuristic"}
+            return {"category": "t-shirt", "confidence": 0.60, "method": "heuristic"}
         return {"category": "pants", "confidence": 0.7}
 
-    # Tall (0.6-0.85) → bottoms
+    # Tall images (0.6-0.85) — bottoms usually, but check for tops
     if ar < 0.85:
         if blue_ratio > 0.06:
             return {"category": "jeans", "confidence": 0.6}
         if skin_bot > 0.35:
             return {"category": "shorts", "confidence": 0.6}
+        # Upper-body garment check
+        if upper_body_score >= 3:
+            if avg_bright < 100:
+                return {"category": "jacket", "confidence": 0.65, "method": "heuristic"}
+            if texture > 45:
+                return {"category": "shirt", "confidence": 0.60, "method": "heuristic"}
+            return {"category": "t-shirt", "confidence": 0.55, "method": "heuristic"}
         return {"category": "pants", "confidence": 0.65}
 
-    # Square (0.85+) → tops
+    # Square/wide images (0.85+) → tops
     if avg_bright < 100:
         return {"category": "jacket", "confidence": 0.55}
     if texture > 55:
